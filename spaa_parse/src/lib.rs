@@ -1,20 +1,178 @@
-//! SPAA (Stack Profile for Agentic Analysis) parser library.
+//! SPAA (Stack Profile for Agentic Analysis) parser and writer library.
 //!
-//! This library parses SPAA files from any `Read`-able source and provides
-//! structured access to profiling data.
+//! This library provides tools for reading and writing SPAA files, a structured
+//! format for representing profiling data from tools like Linux `perf` and DTrace.
 //!
-//! # Example
+//! # Reading SPAA Files
+//!
+//! Use [`SpaaFile::parse`] to read from any source that implements [`std::io::Read`]:
 //!
 //! ```no_run
 //! use std::fs::File;
 //! use spaa_parse::SpaaFile;
 //!
+//! // Parse from a file
 //! let file = File::open("profile.spaa").unwrap();
 //! let spaa = SpaaFile::parse(file).unwrap();
 //!
 //! println!("Source tool: {}", spaa.header.source_tool);
+//! println!("Events: {:?}", spaa.header.events.iter().map(|e| &e.name).collect::<Vec<_>>());
 //! println!("Stacks: {}", spaa.stacks.len());
 //! ```
+//!
+//! You can also parse from in-memory data:
+//!
+//! ```
+//! use std::io::Cursor;
+//! use spaa_parse::SpaaFile;
+//!
+//! let data = r#"{"type":"header","format":"spaa","version":"1.0","source_tool":"perf","frame_order":"leaf_to_root","events":[{"name":"cycles","kind":"hardware","sampling":{"mode":"period","primary_metric":"period"}}]}"#;
+//! let spaa = SpaaFile::parse(Cursor::new(data)).unwrap();
+//! ```
+//!
+//! # Accessing Parsed Data
+//!
+//! The [`SpaaFile`] struct provides access to all parsed records:
+//!
+//! ```no_run
+//! # use spaa_parse::SpaaFile;
+//! # let spaa: SpaaFile = todo!();
+//! // Iterate over stacks for a specific event
+//! for stack in spaa.stacks_for_event("cycles") {
+//!     println!("Stack {} has {} frames", stack.id, stack.frames.len());
+//!
+//!     // Get the primary metric weight
+//!     if let Some(weight) = stack.weights.iter().find(|w| w.metric == "period") {
+//!         println!("  Period: {}", weight.value);
+//!     }
+//! }
+//!
+//! // Resolve frame IDs to full frame information
+//! for stack in spaa.stacks.values() {
+//!     for frame in spaa.resolve_stack_frames(stack).into_iter().flatten() {
+//!         println!("  {} ({})", frame.func, spaa.resolve_dso(frame.dso).map(|d| d.name.as_str()).unwrap_or("?"));
+//!     }
+//! }
+//! ```
+//!
+//! # Writing SPAA Files
+//!
+//! ## Writing a Complete SpaaFile
+//!
+//! If you have a [`SpaaFile`] instance, write it directly:
+//!
+//! ```no_run
+//! use std::fs::File;
+//! use spaa_parse::SpaaFile;
+//!
+//! # let spaa: SpaaFile = todo!();
+//! let output = File::create("output.spaa").unwrap();
+//! spaa.write(output).unwrap();
+//! ```
+//!
+//! ## Building Files Incrementally with SpaaWriter
+//!
+//! Use [`SpaaWriter`] to build SPAA files without constructing a full [`SpaaFile`]
+//! in memory. This is useful for converters that stream data:
+//!
+//! ```no_run
+//! use std::fs::File;
+//! use std::collections::HashMap;
+//! use spaa_parse::{
+//!     SpaaWriter, Header, Dso, Frame, Stack, StackContext, Weight,
+//!     FrameOrder, StackIdMode, EventDef, EventKind, Sampling, SamplingMode,
+//!     FrameKind, StackType,
+//! };
+//!
+//! let file = File::create("output.spaa").unwrap();
+//! let mut writer = SpaaWriter::new(file);
+//!
+//! // 1. Write header first (required)
+//! let header = Header {
+//!     format: "spaa".to_string(),
+//!     version: "1.0".to_string(),
+//!     source_tool: "my-converter".to_string(),
+//!     frame_order: FrameOrder::LeafToRoot,
+//!     events: vec![EventDef {
+//!         name: "cycles".to_string(),
+//!         kind: EventKind::Hardware,
+//!         sampling: Sampling {
+//!             mode: SamplingMode::Period,
+//!             primary_metric: "period".to_string(),
+//!             sample_period: None,
+//!             frequency_hz: None,
+//!         },
+//!         allocation_tracking: None,
+//!     }],
+//!     time_range: None,
+//!     source: None,
+//!     stack_id_mode: StackIdMode::ContentAddressable,
+//! };
+//! writer.write_header(&header).unwrap();
+//!
+//! // 2. Write dictionary records (DSOs, frames, threads)
+//! let dso = Dso {
+//!     id: 1,
+//!     name: "/usr/bin/myapp".to_string(),
+//!     build_id: None,
+//!     is_kernel: false,
+//! };
+//! writer.write_dso(&dso).unwrap();
+//!
+//! let frame = Frame {
+//!     id: 1,
+//!     func: "main".to_string(),
+//!     dso: 1,  // References the DSO above
+//!     func_resolved: true,
+//!     ip: Some("0x401000".to_string()),
+//!     symoff: Some("0x0".to_string()),
+//!     srcline: None,
+//!     srcline_resolved: true,
+//!     inlined: false,
+//!     inline_depth: None,
+//!     kind: FrameKind::User,
+//! };
+//! writer.write_frame(&frame).unwrap();
+//!
+//! // 3. Write stack records
+//! let stack = Stack {
+//!     id: "0x123abc".to_string(),
+//!     frames: vec![1],  // References frame IDs
+//!     stack_type: StackType::Unified,
+//!     context: StackContext {
+//!         event: "cycles".to_string(),
+//!         pid: Some(1234),
+//!         tid: Some(1234),
+//!         cpu: None,
+//!         comm: Some("myapp".to_string()),
+//!         probe: None,
+//!         execname: None,
+//!         uid: None,
+//!         zonename: None,
+//!         trace_fields: None,
+//!         extra: HashMap::new(),
+//!     },
+//!     weights: vec![Weight {
+//!         metric: "period".to_string(),
+//!         value: 1000000,
+//!         unit: Some("events".to_string()),
+//!     }],
+//!     exclusive: None,
+//!     related_stacks: None,
+//! };
+//! writer.write_stack(&stack).unwrap();
+//! ```
+//!
+//! # Record Ordering
+//!
+//! SPAA files must follow this ordering:
+//! 1. Header (exactly one, must be first)
+//! 2. Dictionary records (DSO, frame, thread) - must appear before stacks that reference them
+//! 3. Stack records
+//! 4. Sample records (optional)
+//! 5. Window records (optional)
+//!
+//! The parser validates references and will return errors for invalid files.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
