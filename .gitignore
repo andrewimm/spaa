@@ -1,0 +1,21 @@
+# Rust build artifacts
+/target/
+**/target/
+
+# Cargo.lock for libraries (keep for binaries)
+# Uncomment if this becomes a workspace with only libraries:
+# Cargo.lock
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Debug files
+*.pdb
