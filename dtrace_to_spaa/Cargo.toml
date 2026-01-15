@@ -1,0 +1,10 @@
+[package]
+name = "dtrace_to_spaa"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+spaa_parse = { path = "../spaa_parse" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
