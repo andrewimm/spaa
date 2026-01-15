@@ -18,7 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use thiserror::Error;
 
 /// Errors that can occur during SPAA parsing.
@@ -61,6 +61,19 @@ pub enum ParseError {
 
 /// Result type for SPAA parsing operations.
 pub type Result<T> = std::result::Result<T, ParseError>;
+
+/// Errors that can occur during SPAA writing.
+#[derive(Error, Debug)]
+pub enum WriteError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("JSON serialization error: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+/// Result type for SPAA writing operations.
+pub type WriteResult<T> = std::result::Result<T, WriteError>;
 
 // ============================================================================
 // Header types
@@ -646,6 +659,162 @@ impl SpaaFile {
             .map(|&id| self.resolve_frame(id))
             .collect()
     }
+
+    /// Write this SPAA file to a writer in NDJSON format.
+    ///
+    /// Records are written in the correct order: header first, then dictionaries
+    /// (DSOs, frames, threads), then stacks, samples, and windows.
+    pub fn write<W: Write>(&self, writer: W) -> WriteResult<()> {
+        let mut spaa_writer = SpaaWriter::new(writer);
+        spaa_writer.write_header(&self.header)?;
+
+        // Write dictionaries in deterministic order
+        let mut dsos: Vec<_> = self.dsos.values().collect();
+        dsos.sort_by_key(|d| d.id);
+        for dso in dsos {
+            spaa_writer.write_dso(dso)?;
+        }
+
+        let mut frames: Vec<_> = self.frames.values().collect();
+        frames.sort_by_key(|f| f.id);
+        for frame in frames {
+            spaa_writer.write_frame(frame)?;
+        }
+
+        let mut threads: Vec<_> = self.threads.values().collect();
+        threads.sort_by_key(|t| t.tid);
+        for thread in threads {
+            spaa_writer.write_thread(thread)?;
+        }
+
+        // Write stacks in deterministic order
+        let mut stacks: Vec<_> = self.stacks.values().collect();
+        stacks.sort_by(|a, b| a.id.cmp(&b.id));
+        for stack in stacks {
+            spaa_writer.write_stack(stack)?;
+        }
+
+        // Write samples and windows
+        for sample in &self.samples {
+            spaa_writer.write_sample(sample)?;
+        }
+
+        for window in &self.windows {
+            spaa_writer.write_window(window)?;
+        }
+
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Writer types
+// ============================================================================
+
+/// Helper struct for writing typed records with "type" field.
+#[derive(Serialize)]
+struct TypedRecord<'a, T: Serialize> {
+    #[serde(rename = "type")]
+    record_type: &'a str,
+    #[serde(flatten)]
+    data: &'a T,
+}
+
+/// Writer for creating SPAA files incrementally.
+///
+/// This is useful for converters that build SPAA output without first
+/// constructing a full `SpaaFile` in memory.
+///
+/// # Example
+///
+/// ```no_run
+/// use spaa_parse::{SpaaWriter, Header, Dso, Frame, Stack};
+/// use std::fs::File;
+///
+/// let file = File::create("output.spaa").unwrap();
+/// let mut writer = SpaaWriter::new(file);
+///
+/// // Write header first (required)
+/// # let header: Header = todo!();
+/// writer.write_header(&header).unwrap();
+///
+/// // Write dictionaries
+/// # let dso: Dso = todo!();
+/// writer.write_dso(&dso).unwrap();
+/// # let frame: Frame = todo!();
+/// writer.write_frame(&frame).unwrap();
+///
+/// // Write stacks
+/// # let stack: Stack = todo!();
+/// writer.write_stack(&stack).unwrap();
+/// ```
+pub struct SpaaWriter<W: Write> {
+    writer: W,
+}
+
+impl<W: Write> SpaaWriter<W> {
+    /// Create a new SPAA writer.
+    pub fn new(writer: W) -> Self {
+        Self { writer }
+    }
+
+    /// Write a header record. This should be called first.
+    pub fn write_header(&mut self, header: &Header) -> WriteResult<()> {
+        self.write_record("header", header)
+    }
+
+    /// Write a DSO dictionary record.
+    pub fn write_dso(&mut self, dso: &Dso) -> WriteResult<()> {
+        self.write_record("dso", dso)
+    }
+
+    /// Write a frame dictionary record.
+    pub fn write_frame(&mut self, frame: &Frame) -> WriteResult<()> {
+        self.write_record("frame", frame)
+    }
+
+    /// Write a thread dictionary record.
+    pub fn write_thread(&mut self, thread: &Thread) -> WriteResult<()> {
+        self.write_record("thread", thread)
+    }
+
+    /// Write a stack record.
+    pub fn write_stack(&mut self, stack: &Stack) -> WriteResult<()> {
+        self.write_record("stack", stack)
+    }
+
+    /// Write a sample record.
+    pub fn write_sample(&mut self, sample: &Sample) -> WriteResult<()> {
+        self.write_record("sample", sample)
+    }
+
+    /// Write a window record.
+    pub fn write_window(&mut self, window: &Window) -> WriteResult<()> {
+        self.write_record("window", window)
+    }
+
+    /// Write a record with the given type tag.
+    fn write_record<T: Serialize>(&mut self, record_type: &str, data: &T) -> WriteResult<()> {
+        let typed = TypedRecord { record_type, data };
+        let json = serde_json::to_string(&typed)?;
+        writeln!(self.writer, "{}", json)?;
+        Ok(())
+    }
+
+    /// Get a reference to the underlying writer.
+    pub fn get_ref(&self) -> &W {
+        &self.writer
+    }
+
+    /// Get a mutable reference to the underlying writer.
+    pub fn get_mut(&mut self) -> &mut W {
+        &mut self.writer
+    }
+
+    /// Consume this writer and return the underlying writer.
+    pub fn into_inner(self) -> W {
+        self.writer
+    }
 }
 
 #[cfg(test)]
@@ -912,5 +1081,123 @@ mod tests {
             result,
             Err(ParseError::UnknownRecordType(t, 2)) if t == "unknown"
         ));
+    }
+
+    #[test]
+    fn write_and_read_roundtrip() {
+        // Parse a file
+        let data = format!(
+            "{}\n{}\n{}\n{}",
+            minimal_spaa(),
+            r#"{"type":"dso","id":1,"name":"/usr/bin/app","is_kernel":false}"#,
+            r#"{"type":"frame","id":101,"func":"main","dso":1,"kind":"user"}"#,
+            r#"{"type":"stack","id":"0xabc","frames":[101],"context":{"event":"cycles"},"weights":[{"metric":"period","value":12345}]}"#
+        );
+        let original = SpaaFile::parse(Cursor::new(data)).unwrap();
+
+        // Write it out
+        let mut output = Vec::new();
+        original.write(&mut output).unwrap();
+
+        // Parse the output
+        let roundtrip = SpaaFile::parse(Cursor::new(output)).unwrap();
+
+        // Verify key fields match
+        assert_eq!(roundtrip.header.format, original.header.format);
+        assert_eq!(roundtrip.header.source_tool, original.header.source_tool);
+        assert_eq!(roundtrip.dsos.len(), original.dsos.len());
+        assert_eq!(roundtrip.frames.len(), original.frames.len());
+        assert_eq!(roundtrip.stacks.len(), original.stacks.len());
+        assert_eq!(
+            roundtrip.stacks["0xabc"].weights[0].value,
+            original.stacks["0xabc"].weights[0].value
+        );
+    }
+
+    #[test]
+    fn spaa_writer_creates_valid_output() {
+        let mut output = Vec::new();
+        {
+            let mut writer = super::SpaaWriter::new(&mut output);
+
+            let header = Header {
+                format: "spaa".to_string(),
+                version: "1.0".to_string(),
+                source_tool: "test".to_string(),
+                frame_order: FrameOrder::LeafToRoot,
+                events: vec![EventDef {
+                    name: "cycles".to_string(),
+                    kind: EventKind::Hardware,
+                    sampling: Sampling {
+                        mode: SamplingMode::Period,
+                        primary_metric: "period".to_string(),
+                        sample_period: None,
+                        frequency_hz: None,
+                    },
+                    allocation_tracking: None,
+                }],
+                time_range: None,
+                source: None,
+                stack_id_mode: StackIdMode::ContentAddressable,
+            };
+            writer.write_header(&header).unwrap();
+
+            let dso = Dso {
+                id: 1,
+                name: "/bin/test".to_string(),
+                build_id: None,
+                is_kernel: false,
+            };
+            writer.write_dso(&dso).unwrap();
+
+            let frame = Frame {
+                id: 1,
+                func: "main".to_string(),
+                dso: 1,
+                func_resolved: true,
+                ip: None,
+                symoff: None,
+                srcline: None,
+                srcline_resolved: true,
+                inlined: false,
+                inline_depth: None,
+                kind: FrameKind::User,
+            };
+            writer.write_frame(&frame).unwrap();
+
+            let stack = Stack {
+                id: "0x1".to_string(),
+                frames: vec![1],
+                stack_type: StackType::Unified,
+                context: StackContext {
+                    event: "cycles".to_string(),
+                    pid: None,
+                    tid: None,
+                    cpu: None,
+                    comm: None,
+                    probe: None,
+                    execname: None,
+                    uid: None,
+                    zonename: None,
+                    trace_fields: None,
+                    extra: HashMap::new(),
+                },
+                weights: vec![Weight {
+                    metric: "period".to_string(),
+                    value: 100,
+                    unit: None,
+                }],
+                exclusive: None,
+                related_stacks: None,
+            };
+            writer.write_stack(&stack).unwrap();
+        }
+
+        // Verify the output is valid SPAA
+        let spaa = SpaaFile::parse(Cursor::new(output)).unwrap();
+        assert_eq!(spaa.header.source_tool, "test");
+        assert_eq!(spaa.dsos.len(), 1);
+        assert_eq!(spaa.frames.len(), 1);
+        assert_eq!(spaa.stacks.len(), 1);
     }
 }
