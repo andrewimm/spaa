@@ -1,12 +1,12 @@
 //! Convert Linux `perf script` output to SPAA format.
 //!
-//! This library parses the text output from `perf script` and converts it
+//! This module parses the text output from `perf script` and converts it
 //! to the SPAA (Stack Profile for Agentic Analysis) format.
 //!
 //! # Example
 //!
 //! ```no_run
-//! use perf_to_spaa::PerfConverter;
+//! use spaa::perf::PerfConverter;
 //! use std::fs::File;
 //! use std::io::{BufReader, BufWriter};
 //!

@@ -1,6 +1,6 @@
 //! Convert DTrace output to SPAA format.
 //!
-//! This library parses DTrace output and converts it to the SPAA
+//! This module parses DTrace output and converts it to the SPAA
 //! (Stack Profile for Agentic Analysis) format.
 //!
 //! # Supported Formats
@@ -15,7 +15,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use dtrace_to_spaa::{DtraceConverter, InputFormat};
+//! use spaa::dtrace::{DtraceConverter, InputFormat};
 //! use std::fs::File;
 //! use std::io::{BufReader, BufWriter};
 //!

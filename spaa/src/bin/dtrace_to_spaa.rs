@@ -12,7 +12,7 @@
 //! ```
 
 use clap::{Parser, ValueEnum};
-use dtrace_to_spaa::{ConverterConfig, DtraceConverter, InputFormat};
+use spaa::dtrace::{ConverterConfig, DtraceConverter, InputFormat};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;

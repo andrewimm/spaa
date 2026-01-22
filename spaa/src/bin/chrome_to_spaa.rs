@@ -16,10 +16,8 @@
 //! chrome_to_spaa Heap.heapsnapshot -o heap.spaa
 //! ```
 
-use chrome_to_spaa::{
-    CpuProfileConverter, HeapSnapshotConverter, ProfileType, detect_profile_type,
-};
 use clap::Parser;
+use spaa::chrome::{CpuProfileConverter, HeapSnapshotConverter, ProfileType, detect_profile_type};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;

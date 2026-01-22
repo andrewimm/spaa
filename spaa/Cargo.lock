@@ -53,17 +53,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chrome_to_spaa"
-version = "0.1.0"
-dependencies = [
- "clap",
- "serde",
- "serde_json",
- "spaa_parse",
- "thiserror",
-]
-
-[[package]]
 name = "clap"
 version = "4.5.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -198,6 +187,17 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
+]
+
+[[package]]
+name = "spaa"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "spaa_parse",
+ "thiserror",
 ]
 
 [[package]]

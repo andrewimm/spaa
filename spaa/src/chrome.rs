@@ -1,6 +1,6 @@
 //! Convert Chrome profiling data to SPAA format.
 //!
-//! This library parses Chrome DevTools profiling data and converts it
+//! This module parses Chrome DevTools profiling data and converts it
 //! to the SPAA (Stack Profile for Agentic Analysis) format.
 //!
 //! # Supported Formats
@@ -18,7 +18,7 @@
 //! # Example: CPU Profile
 //!
 //! ```no_run
-//! use chrome_to_spaa::CpuProfileConverter;
+//! use spaa::chrome::CpuProfileConverter;
 //! use std::fs::File;
 //! use std::io::{BufReader, BufWriter};
 //!
@@ -33,7 +33,7 @@
 //! # Example: Heap Snapshot
 //!
 //! ```no_run
-//! use chrome_to_spaa::HeapSnapshotConverter;
+//! use spaa::chrome::HeapSnapshotConverter;
 //! use std::fs::File;
 //! use std::io::{BufReader, BufWriter};
 //!
