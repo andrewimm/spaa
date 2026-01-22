@@ -3,6 +3,11 @@ name = "spaa"
 version = "0.1.0"
 edition = "2024"
 description = "Tools for converting profiling data to SPAA format"
+license = "MIT"
+repository = "https://github.com/yourusername/spaa"
+readme = "README.md"
+keywords = ["profiling", "perf", "dtrace", "chrome", "flamegraph"]
+categories = ["development-tools::profiling", "command-line-utilities"]
 
 [lib]
 path = "src/lib.rs"
