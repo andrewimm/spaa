@@ -1,12 +1,12 @@
 [package]
 name = "spaa"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Tools for converting profiling data to SPAA format"
 license = "MIT"
-repository = "https://github.com/yourusername/spaa"
+repository = "https://github.com/andrewimm/spaa"
 readme = "README.md"
-keywords = ["profiling", "perf", "dtrace", "chrome", "flamegraph"]
+keywords = ["profiling", "perf", "dtrace", "chrome", "ai", "agent"]
 categories = ["development-tools::profiling", "command-line-utilities"]
 
 [lib]
