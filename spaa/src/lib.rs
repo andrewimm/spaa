@@ -9,6 +9,10 @@
 //! - [`perf`] - Convert Linux `perf script` output to SPAA
 //! - [`chrome`] - Convert Chrome DevTools profiles to SPAA
 //!
+//! # Analysis Tools
+//!
+//! - [`heapdiff`] - Compare heap snapshots for memory leak analysis
+//!
 //! # Example
 //!
 //! ```no_run
@@ -26,6 +30,7 @@
 
 pub mod chrome;
 pub mod dtrace;
+pub mod heapdiff;
 pub mod perf;
 
 // Re-export spaa_parse for convenience

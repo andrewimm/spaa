@@ -20,6 +20,10 @@ path = "src/bin/dtrace_to_spaa.rs"
 name = "chrome_to_spaa"
 path = "src/bin/chrome_to_spaa.rs"
 
+[[bin]]
+name = "heapdiff"
+path = "src/bin/heapdiff.rs"
+
 [dependencies]
 spaa_parse = { version = "0.1.0", path = "../spaa_parse" }
 serde = { version = "1.0", features = ["derive"] }
