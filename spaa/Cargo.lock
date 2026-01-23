@@ -191,7 +191,7 @@ dependencies = [
 
 [[package]]
 name = "spaa"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "serde",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "spaa_parse"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",

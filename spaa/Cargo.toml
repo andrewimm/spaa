@@ -6,7 +6,7 @@ description = "Tools for converting profiling data to SPAA format"
 license = "MIT"
 repository = "https://github.com/andrewimm/spaa"
 readme = "README.md"
-keywords = ["profiling", "perf", "dtrace", "chrome", "ai", "agent"]
+keywords = ["profiling", "perf", "dtrace", "chrome", "agent"]
 categories = ["development-tools::profiling", "command-line-utilities"]
 
 [lib]
