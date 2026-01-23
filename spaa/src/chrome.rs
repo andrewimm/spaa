@@ -15,6 +15,10 @@
 //! 3. **Chrome heap snapshot** (`.heapsnapshot`): Memory profiling data from
 //!    Chrome's Memory panel with allocation stack traces.
 //!
+//! 4. **Chrome heap timeline** (`.heaptimeline`): Temporal heap allocation data
+//!    from Chrome's Memory panel. Similar to heap snapshots but includes
+//!    timestamp samples for tracking allocations over time.
+//!
 //! # Example: CPU Profile
 //!
 //! ```no_run
@@ -738,17 +742,20 @@ pub struct HeapSnapshot {
     pub nodes: Vec<u64>,
     /// Flat array of edge fields.
     pub edges: Vec<u64>,
-    /// Function info for allocation traces.
+    /// Function info for allocation traces (flat array, chunked by trace_function_info_fields).
     #[serde(default)]
-    pub trace_function_infos: Vec<TraceFunctionInfo>,
-    /// Allocation trace tree.
+    pub trace_function_infos: Vec<i64>,
+    /// Allocation trace tree - a single root node: [id, func_idx, count, size, children_array].
     #[serde(default)]
-    pub trace_tree: Vec<TraceTreeNode>,
+    pub trace_tree: serde_json::Value,
     /// String table.
     pub strings: Vec<String>,
     /// Source locations (optional).
     #[serde(default)]
     pub locations: Vec<u64>,
+    /// Temporal samples for heap timeline (flat array of [timestamp_us, last_assigned_id] pairs).
+    #[serde(default)]
+    pub samples: Vec<u64>,
 }
 
 /// Snapshot metadata.
@@ -782,22 +789,12 @@ pub struct SnapshotFieldMeta {
     /// Trace node field names.
     #[serde(default)]
     pub trace_node_fields: Vec<String>,
-}
-
-/// Function info for allocation traces.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum TraceFunctionInfo {
-    /// Flat array format: [function_id, name_idx, script_name_idx, script_id, line, column]
-    Array(Vec<serde_json::Value>),
-}
-
-/// Node in the allocation trace tree.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum TraceTreeNode {
-    /// Flat array format: [id, function_info_index, count, size, children...]
-    Array(Vec<serde_json::Value>),
+    /// Sample field names (for heap timeline).
+    #[serde(default)]
+    pub sample_fields: Vec<String>,
+    /// Location field names.
+    #[serde(default)]
+    pub location_fields: Vec<String>,
 }
 
 // ============================================================================
@@ -824,11 +821,25 @@ struct ParsedTraceNode {
     children: Vec<usize>,
 }
 
-/// Converter for Chrome heap snapshot files to SPAA format.
+/// Parsed heap timeline sample.
+#[derive(Debug, Clone)]
+struct HeapTimelineSample {
+    /// Timestamp in microseconds.
+    timestamp_us: u64,
+    /// Last assigned object ID at this sample point.
+    #[allow(dead_code)]
+    last_assigned_id: u64,
+}
+
+/// Converter for Chrome heap snapshot and heap timeline files to SPAA format.
 pub struct HeapSnapshotConverter {
     snapshot: Option<HeapSnapshot>,
     function_infos: Vec<FunctionInfo>,
     trace_nodes: Vec<ParsedTraceNode>,
+    /// Whether this is a heap timeline (has temporal samples).
+    is_timeline: bool,
+    /// Parsed timeline samples (only for heap timeline format).
+    timeline_samples: Vec<HeapTimelineSample>,
 }
 
 impl HeapSnapshotConverter {
@@ -838,12 +849,18 @@ impl HeapSnapshotConverter {
             snapshot: None,
             function_infos: Vec::new(),
             trace_nodes: Vec::new(),
+            is_timeline: false,
+            timeline_samples: Vec::new(),
         }
     }
 
-    /// Parse a heap snapshot from a reader.
+    /// Parse a heap snapshot or heap timeline from a reader.
     pub fn parse<R: Read>(&mut self, reader: R) -> Result<()> {
         let snapshot: HeapSnapshot = serde_json::from_reader(reader)?;
+
+        // Detect if this is a heap timeline by checking for sample_fields and samples
+        self.is_timeline =
+            !snapshot.snapshot.meta.sample_fields.is_empty() && !snapshot.samples.is_empty();
 
         // Parse function infos
         self.function_infos = self.parse_function_infos(&snapshot)?;
@@ -851,37 +868,101 @@ impl HeapSnapshotConverter {
         // Parse trace tree
         self.trace_nodes = self.parse_trace_tree(&snapshot)?;
 
+        // Parse timeline samples if present
+        if self.is_timeline {
+            self.timeline_samples = self.parse_timeline_samples(&snapshot)?;
+        }
+
         self.snapshot = Some(snapshot);
         Ok(())
+    }
+
+    fn parse_timeline_samples(&self, snapshot: &HeapSnapshot) -> Result<Vec<HeapTimelineSample>> {
+        let mut samples = Vec::new();
+
+        // Sample fields are typically: [timestamp_us, last_assigned_id]
+        // Each sample is a pair of values in the flat array
+        let fields_per_sample = snapshot.snapshot.meta.sample_fields.len();
+        if fields_per_sample == 0 {
+            return Ok(samples);
+        }
+
+        // Find indices for timestamp_us and last_assigned_id
+        let timestamp_idx = snapshot
+            .snapshot
+            .meta
+            .sample_fields
+            .iter()
+            .position(|f| f == "timestamp_us")
+            .unwrap_or(0);
+        let last_id_idx = snapshot
+            .snapshot
+            .meta
+            .sample_fields
+            .iter()
+            .position(|f| f == "last_assigned_id")
+            .unwrap_or(1);
+
+        for chunk in snapshot.samples.chunks(fields_per_sample) {
+            if chunk.len() >= fields_per_sample {
+                let timestamp_us = if timestamp_idx < chunk.len() {
+                    chunk[timestamp_idx]
+                } else {
+                    0
+                };
+                let last_assigned_id = if last_id_idx < chunk.len() {
+                    chunk[last_id_idx]
+                } else {
+                    0
+                };
+                samples.push(HeapTimelineSample {
+                    timestamp_us,
+                    last_assigned_id,
+                });
+            }
+        }
+
+        Ok(samples)
     }
 
     fn parse_function_infos(&self, snapshot: &HeapSnapshot) -> Result<Vec<FunctionInfo>> {
         let mut infos = Vec::new();
 
-        for func_info in &snapshot.trace_function_infos {
-            match func_info {
-                TraceFunctionInfo::Array(arr) => {
-                    if arr.len() >= 6 {
-                        let name_idx = arr[1].as_u64().unwrap_or(0) as usize;
-                        let script_name_idx = arr[2].as_u64().unwrap_or(0) as usize;
-                        let line = arr[4].as_i64().unwrap_or(-1);
-                        let column = arr[5].as_i64().unwrap_or(-1);
+        // Get field count from metadata (typically 6: function_id, name, script_name, script_id, line, column)
+        let fields = &snapshot.snapshot.meta.trace_function_info_fields;
+        let fields_per_info = fields.len();
+        if fields_per_info == 0 {
+            return Ok(infos);
+        }
 
-                        let name = snapshot.strings.get(name_idx).cloned().unwrap_or_default();
-                        let script_name = snapshot
-                            .strings
-                            .get(script_name_idx)
-                            .cloned()
-                            .unwrap_or_default();
+        // Find indices for the fields we need
+        let name_field_idx = fields.iter().position(|f| f == "name").unwrap_or(1);
+        let script_name_field_idx = fields.iter().position(|f| f == "script_name").unwrap_or(2);
+        let line_field_idx = fields.iter().position(|f| f == "line").unwrap_or(4);
+        let column_field_idx = fields.iter().position(|f| f == "column").unwrap_or(5);
 
-                        infos.push(FunctionInfo {
-                            name,
-                            script_name,
-                            line,
-                            column,
-                        });
-                    }
-                }
+        // Parse flat array in chunks
+        for chunk in snapshot.trace_function_infos.chunks(fields_per_info) {
+            if chunk.len() >= fields_per_info {
+                let name_idx = chunk.get(name_field_idx).copied().unwrap_or(0) as usize;
+                let script_name_idx =
+                    chunk.get(script_name_field_idx).copied().unwrap_or(0) as usize;
+                let line = chunk.get(line_field_idx).copied().unwrap_or(-1);
+                let column = chunk.get(column_field_idx).copied().unwrap_or(-1);
+
+                let name = snapshot.strings.get(name_idx).cloned().unwrap_or_default();
+                let script_name = snapshot
+                    .strings
+                    .get(script_name_idx)
+                    .cloned()
+                    .unwrap_or_default();
+
+                infos.push(FunctionInfo {
+                    name,
+                    script_name,
+                    line,
+                    column,
+                });
             }
         }
 
@@ -891,34 +972,125 @@ impl HeapSnapshotConverter {
     fn parse_trace_tree(&self, snapshot: &HeapSnapshot) -> Result<Vec<ParsedTraceNode>> {
         let mut nodes = Vec::new();
 
-        for (idx, trace_node) in snapshot.trace_tree.iter().enumerate() {
-            match trace_node {
-                TraceTreeNode::Array(arr) => {
-                    if arr.len() >= 4 {
-                        let id = arr[0].as_u64().unwrap_or(idx as u64);
-                        let function_info_index = arr[1].as_u64().unwrap_or(0) as usize;
-                        let count = arr[2].as_u64().unwrap_or(0);
-                        let size = arr[3].as_u64().unwrap_or(0);
-
-                        // Remaining elements are child indices
-                        let children: Vec<usize> = arr[4..]
-                            .iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as usize))
-                            .collect();
-
-                        nodes.push(ParsedTraceNode {
-                            id,
-                            function_info_index,
-                            count,
-                            size,
-                            children,
-                        });
-                    }
-                }
-            }
+        // trace_tree is a single root node: [id, func_info_idx, count, size, children_array]
+        // The children_array contains children as flat groups of 5 values:
+        //   [child1_id, child1_func, child1_count, child1_size, child1_children, child2_id, ...]
+        if snapshot.trace_tree.is_array() {
+            self.parse_trace_node_recursive(&snapshot.trace_tree, &mut nodes);
         }
 
         Ok(nodes)
+    }
+
+    fn parse_trace_node_recursive(
+        &self,
+        node: &serde_json::Value,
+        nodes: &mut Vec<ParsedTraceNode>,
+    ) {
+        let arr = match node.as_array() {
+            Some(a) => a,
+            None => return,
+        };
+
+        if arr.len() < 5 {
+            return;
+        }
+
+        let id = arr[0].as_u64().unwrap_or(0);
+        let function_info_index = arr[1].as_u64().unwrap_or(0) as usize;
+        let count = arr[2].as_u64().unwrap_or(0);
+        let size = arr[3].as_u64().unwrap_or(0);
+
+        // Current node index in our flat list
+        let current_idx = nodes.len();
+
+        // Add placeholder node (we'll fill in children after)
+        nodes.push(ParsedTraceNode {
+            id,
+            function_info_index,
+            count,
+            size,
+            children: Vec::new(),
+        });
+
+        // Element 4 is the children array, containing flat groups of 5 values
+        let mut child_indices = Vec::new();
+        if let Some(children_arr) = arr[4].as_array() {
+            let mut i = 0;
+            while i + 4 < children_arr.len() {
+                // Each child is 5 consecutive values: id, func_idx, count, size, grandchildren_array
+                let child_id = children_arr[i].as_u64().unwrap_or(0);
+                let child_func_idx = children_arr[i + 1].as_u64().unwrap_or(0) as usize;
+                let child_count = children_arr[i + 2].as_u64().unwrap_or(0);
+                let child_size = children_arr[i + 3].as_u64().unwrap_or(0);
+                let grandchildren = &children_arr[i + 4];
+
+                let child_idx = nodes.len();
+                child_indices.push(child_idx);
+
+                // Add child node
+                nodes.push(ParsedTraceNode {
+                    id: child_id,
+                    function_info_index: child_func_idx,
+                    count: child_count,
+                    size: child_size,
+                    children: Vec::new(),
+                });
+
+                // Recursively parse grandchildren
+                if let Some(gc_arr) = grandchildren.as_array() {
+                    if !gc_arr.is_empty() {
+                        let gc_indices = self.parse_children_array(gc_arr, nodes);
+                        nodes[child_idx].children = gc_indices;
+                    }
+                }
+
+                i += 5;
+            }
+        }
+
+        // Update the node with its children
+        nodes[current_idx].children = child_indices;
+    }
+
+    fn parse_children_array(
+        &self,
+        children_arr: &[serde_json::Value],
+        nodes: &mut Vec<ParsedTraceNode>,
+    ) -> Vec<usize> {
+        let mut child_indices = Vec::new();
+        let mut i = 0;
+
+        while i + 4 < children_arr.len() {
+            let child_id = children_arr[i].as_u64().unwrap_or(0);
+            let child_func_idx = children_arr[i + 1].as_u64().unwrap_or(0) as usize;
+            let child_count = children_arr[i + 2].as_u64().unwrap_or(0);
+            let child_size = children_arr[i + 3].as_u64().unwrap_or(0);
+            let grandchildren = &children_arr[i + 4];
+
+            let child_idx = nodes.len();
+            child_indices.push(child_idx);
+
+            nodes.push(ParsedTraceNode {
+                id: child_id,
+                function_info_index: child_func_idx,
+                count: child_count,
+                size: child_size,
+                children: Vec::new(),
+            });
+
+            // Recursively parse grandchildren
+            if let Some(gc_arr) = grandchildren.as_array() {
+                if !gc_arr.is_empty() {
+                    let gc_indices = self.parse_children_array(gc_arr, nodes);
+                    nodes[child_idx].children = gc_indices;
+                }
+            }
+
+            i += 5;
+        }
+
+        child_indices
     }
 
     /// Write the parsed heap snapshot as SPAA format.
@@ -1145,17 +1317,46 @@ impl HeapSnapshotConverter {
             sampling,
             allocation_tracking: Some(spaa_parse::AllocationTracking {
                 tracks_frees: false,
-                has_timestamps: false,
+                has_timestamps: self.is_timeline,
             }),
+        };
+
+        // Compute time range from timeline samples if available
+        let time_range = if self.is_timeline && !self.timeline_samples.is_empty() {
+            let start_us = self
+                .timeline_samples
+                .iter()
+                .map(|s| s.timestamp_us)
+                .min()
+                .unwrap_or(0);
+            let end_us = self
+                .timeline_samples
+                .iter()
+                .map(|s| s.timestamp_us)
+                .max()
+                .unwrap_or(0);
+            Some(spaa_parse::TimeRange {
+                start: start_us as f64 / 1_000_000.0,
+                end: end_us as f64 / 1_000_000.0,
+                unit: "seconds".to_string(),
+            })
+        } else {
+            None
+        };
+
+        let source_tool = if self.is_timeline {
+            "chrome-heaptimeline"
+        } else {
+            "chrome-heapsnapshot"
         };
 
         Header {
             format: "spaa".to_string(),
             version: "1.0".to_string(),
-            source_tool: "chrome-heapsnapshot".to_string(),
+            source_tool: source_tool.to_string(),
             frame_order: FrameOrder::LeafToRoot,
             events: vec![event],
-            time_range: None,
+            time_range,
             source: Some(spaa_parse::SourceInfo {
                 tool: "chrome-devtools".to_string(),
                 command: None,
@@ -1209,6 +1410,8 @@ pub enum ProfileType {
     CpuProfile,
     /// Chrome heap snapshot.
     HeapSnapshot,
+    /// Chrome heap timeline (heap snapshot with temporal samples).
+    HeapTimeline,
 }
 
 /// Detect the type of Chrome profile from JSON content.
@@ -1216,7 +1419,22 @@ pub fn detect_profile_type(contents: &str) -> Result<ProfileType> {
     let value: serde_json::Value = serde_json::from_str(contents)?;
 
     if value.get("snapshot").is_some() && value.get("nodes").is_some() {
-        // Heap snapshot has both "snapshot" (metadata) and "nodes" (heap objects)
+        // Both heap snapshot and heap timeline have "snapshot" and "nodes".
+        // Heap timeline has a non-empty "samples" array with timestamp data.
+        if let Some(samples) = value.get("samples") {
+            if let Some(arr) = samples.as_array() {
+                if !arr.is_empty() {
+                    // Check if snapshot.meta has sample_fields (heap timeline indicator)
+                    if let Some(snapshot) = value.get("snapshot") {
+                        if let Some(meta) = snapshot.get("meta") {
+                            if meta.get("sample_fields").is_some() {
+                                return Ok(ProfileType::HeapTimeline);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Ok(ProfileType::HeapSnapshot)
     } else if value.get("traceEvents").is_some() {
         Ok(ProfileType::PerformanceTrace)
@@ -1749,16 +1967,8 @@ mod tests {
             },
             "nodes": [0, 0, 1, 100, 1, 0, 3, 1, 2, 200, 0, 1],
             "edges": [0, 0, 6],
-            "trace_function_infos": [
-                [0, 0, 0, 0, -1, -1],
-                [1, 1, 2, 1, 10, 5],
-                [2, 3, 4, 2, 25, 10]
-            ],
-            "trace_tree": [
-                [0, 0, 0, 0, 1],
-                [1, 1, 5, 1000, 2],
-                [2, 2, 10, 5000]
-            ],
+            "trace_function_infos": [0, 0, 0, 0, -1, -1, 1, 1, 2, 1, 10, 5, 2, 3, 4, 2, 25, 10],
+            "trace_tree": [0, 0, 0, 0, [1, 1, 5, 1000, [2, 2, 10, 5000, []]]],
             "strings": ["(root)", "allocateBuffer", "app.js", "processData", "utils.js"],
             "locations": []
         }"#
@@ -1860,5 +2070,141 @@ mod tests {
         // From trace_tree: node 1 has 1000 bytes, node 2 has 5000 bytes
         assert!(alloc_bytes.contains(&1000));
         assert!(alloc_bytes.contains(&5000));
+    }
+
+    // ========================================================================
+    // Heap Timeline tests
+    // ========================================================================
+
+    fn sample_heap_timeline() -> &'static str {
+        r#"{
+            "snapshot": {
+                "meta": {
+                    "node_fields": ["type", "name", "id", "self_size", "edge_count", "trace_node_id", "detachedness"],
+                    "node_types": [["hidden", "array", "string", "object", "code", "closure"], "string", "number", "number", "number", "number", "number"],
+                    "edge_fields": ["type", "name_or_index", "to_node"],
+                    "edge_types": [["context", "element", "property", "internal", "hidden"], "string_or_number", "node"],
+                    "trace_function_info_fields": ["function_id", "name", "script_name", "script_id", "line", "column"],
+                    "trace_node_fields": ["id", "function_info_index", "count", "size", "children"],
+                    "sample_fields": ["timestamp_us", "last_assigned_id"],
+                    "location_fields": ["object_index", "script_id", "line", "column"]
+                },
+                "node_count": 3,
+                "edge_count": 2,
+                "trace_function_count": 3
+            },
+            "nodes": [0, 0, 1, 100, 1, 0, 0, 3, 1, 2, 200, 0, 1, 0, 3, 2, 3, 300, 1, 2, 0],
+            "edges": [0, 0, 7, 0, 1, 14],
+            "trace_function_infos": [0, 0, 0, 0, -1, -1, 1, 1, 2, 1, 10, 5, 2, 3, 4, 2, 25, 10],
+            "trace_tree": [0, 0, 0, 0, [1, 1, 5, 1000, [2, 2, 10, 5000, []]]],
+            "samples": [1000000, 100, 2000000, 150, 3000000, 200, 4000000, 250],
+            "locations": [],
+            "strings": ["(root)", "allocateBuffer", "app.js", "processData", "utils.js"]
+        }"#
+    }
+
+    #[test]
+    fn detect_heap_timeline_format() {
+        let profile_type = detect_profile_type(sample_heap_timeline()).unwrap();
+        assert_eq!(profile_type, ProfileType::HeapTimeline);
+    }
+
+    #[test]
+    fn parse_heap_timeline() {
+        let cursor = Cursor::new(sample_heap_timeline());
+        let mut converter = HeapSnapshotConverter::new();
+        converter.parse(cursor).unwrap();
+
+        // Should be detected as timeline
+        assert!(converter.is_timeline);
+
+        // Should have parsed 3 function infos
+        assert_eq!(converter.function_infos.len(), 3);
+
+        // Should have parsed 3 trace nodes
+        assert_eq!(converter.trace_nodes.len(), 3);
+
+        // Should have parsed 4 timeline samples
+        assert_eq!(converter.timeline_samples.len(), 4);
+        assert_eq!(converter.timeline_samples[0].timestamp_us, 1000000);
+        assert_eq!(converter.timeline_samples[3].timestamp_us, 4000000);
+    }
+
+    #[test]
+    fn heap_timeline_converts_to_spaa() {
+        let cursor = Cursor::new(sample_heap_timeline());
+        let mut converter = HeapSnapshotConverter::new();
+        converter.parse(cursor).unwrap();
+
+        let mut output = Vec::new();
+        converter.write_spaa(&mut output).unwrap();
+
+        let spaa = spaa_parse::SpaaFile::parse(Cursor::new(output)).unwrap();
+
+        assert_eq!(spaa.header.source_tool, "chrome-heaptimeline");
+        assert_eq!(spaa.header.events[0].name, "allocation");
+        assert_eq!(spaa.header.events[0].kind, EventKind::Allocation);
+        assert!(!spaa.dsos.is_empty());
+        assert!(!spaa.frames.is_empty());
+        assert!(!spaa.stacks.is_empty());
+    }
+
+    #[test]
+    fn heap_timeline_has_time_range() {
+        let cursor = Cursor::new(sample_heap_timeline());
+        let mut converter = HeapSnapshotConverter::new();
+        converter.parse(cursor).unwrap();
+
+        let mut output = Vec::new();
+        converter.write_spaa(&mut output).unwrap();
+
+        let spaa = spaa_parse::SpaaFile::parse(Cursor::new(output)).unwrap();
+
+        // Timeline should have time_range
+        let time_range = spaa
+            .header
+            .time_range
+            .expect("timeline should have time_range");
+        assert_eq!(time_range.start, 1.0); // 1000000 us = 1 second
+        assert_eq!(time_range.end, 4.0); // 4000000 us = 4 seconds
+        assert_eq!(time_range.unit, "seconds");
+    }
+
+    #[test]
+    fn heap_timeline_has_timestamps_flag() {
+        let cursor = Cursor::new(sample_heap_timeline());
+        let mut converter = HeapSnapshotConverter::new();
+        converter.parse(cursor).unwrap();
+
+        let mut output = Vec::new();
+        converter.write_spaa(&mut output).unwrap();
+
+        let spaa = spaa_parse::SpaaFile::parse(Cursor::new(output)).unwrap();
+
+        // allocation_tracking.has_timestamps should be true for timeline
+        let allocation_tracking = spaa.header.events[0]
+            .allocation_tracking
+            .as_ref()
+            .expect("should have allocation_tracking");
+        assert!(allocation_tracking.has_timestamps);
+    }
+
+    #[test]
+    fn heap_snapshot_does_not_have_timestamps_flag() {
+        let cursor = Cursor::new(sample_heap_snapshot());
+        let mut converter = HeapSnapshotConverter::new();
+        converter.parse(cursor).unwrap();
+
+        let mut output = Vec::new();
+        converter.write_spaa(&mut output).unwrap();
+
+        let spaa = spaa_parse::SpaaFile::parse(Cursor::new(output)).unwrap();
+
+        // allocation_tracking.has_timestamps should be false for snapshot
+        let allocation_tracking = spaa.header.events[0]
+            .allocation_tracking
+            .as_ref()
+            .expect("should have allocation_tracking");
+        assert!(!allocation_tracking.has_timestamps);
     }
 }

@@ -7,6 +7,7 @@
 //! - Chrome Performance traces (`.json`) from the Performance panel
 //! - Standalone cpuprofile files (`.cpuprofile`)
 //! - Chrome heap snapshots (`.heapsnapshot`) from the Memory panel
+//! - Chrome heap timelines (`.heaptimeline`) from the Memory panel
 //!
 //! # Usage
 //!
@@ -14,6 +15,7 @@
 //! chrome_to_spaa trace.json -o output.spaa
 //! chrome_to_spaa profile.cpuprofile
 //! chrome_to_spaa Heap.heapsnapshot -o heap.spaa
+//! chrome_to_spaa timeline.heaptimeline -o timeline.spaa
 //! ```
 
 use clap::Parser;
@@ -28,7 +30,7 @@ use std::process::ExitCode;
 #[command(about = "Convert Chrome profiling data to SPAA format")]
 #[command(version)]
 struct Args {
-    /// Input file (Performance trace, cpuprofile, or heap snapshot)
+    /// Input file (Performance trace, cpuprofile, heap snapshot, or heap timeline)
     input: PathBuf,
 
     /// Output SPAA file (defaults to input filename with .spaa extension)
@@ -71,8 +73,13 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // Convert based on type
     match profile_type {
-        ProfileType::HeapSnapshot => {
-            eprintln!("Detected: Chrome heap snapshot");
+        ProfileType::HeapSnapshot | ProfileType::HeapTimeline => {
+            let type_name = match profile_type {
+                ProfileType::HeapSnapshot => "Chrome heap snapshot",
+                ProfileType::HeapTimeline => "Chrome heap timeline",
+                _ => unreachable!(),
+            };
+            eprintln!("Detected: {}", type_name);
             let mut converter = HeapSnapshotConverter::new();
             converter.parse(std::io::Cursor::new(&contents))?;
             converter.write_spaa(&mut writer)?;
