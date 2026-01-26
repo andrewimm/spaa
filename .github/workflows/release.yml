@@ -18,20 +18,20 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact_name: spaa-converter
-            asset_name: spaa-converter-linux-x64
+            artifact_name: chrome_to_spaa
+            asset_name: chrome-spaa-linux-x64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            artifact_name: spaa-converter
-            asset_name: spaa-converter-linux-x64-musl
+            artifact_name: chrome_to_spaa
+            asset_name: chrome-spaa-linux-x64-musl
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact_name: spaa-converter
-            asset_name: spaa-converter-macos-x64
+            artifact_name: chrome_to_spaa
+            asset_name: chrome-spaa-macos-x64
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact_name: spaa-converter
-            asset_name: spaa-converter-macos-arm64
+            artifact_name: chrome_to_saa
+            asset_name: chrome-spaa-macos-arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -48,7 +48,7 @@ jobs:
           sudo apt-get install -y musl-tools
       
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --bin ${{ matrix.artifact_name }} --target ${{ matrix.target }}
       
       - name: Strip binary
         if: matrix.os != 'windows-latest'
