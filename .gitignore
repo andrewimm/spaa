@@ -19,3 +19,8 @@ Thumbs.db
 
 # Debug files
 *.pdb
+
+# Site
+node_modules/
+.next/
+.env*.local
