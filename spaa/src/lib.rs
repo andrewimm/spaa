@@ -32,6 +32,7 @@ pub mod chrome;
 pub mod dtrace;
 pub mod heapdiff;
 pub mod perf;
+pub mod turbopack;
 
 // Re-export spaa_parse for convenience
 pub use spaa_parse;

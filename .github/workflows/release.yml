@@ -16,6 +16,7 @@ jobs:
     strategy:
       matrix:
         include:
+          # chrome_to_spaa
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact_name: chrome_to_spaa
@@ -32,6 +33,23 @@ jobs:
             target: aarch64-apple-darwin
             artifact_name: chrome_to_spaa
             asset_name: chrome_to_spaa-macos-arm64
+          # turbopack_to_spaa
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: turbopack_to_spaa
+            asset_name: turbopack_to_spaa-linux-x64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact_name: turbopack_to_spaa
+            asset_name: turbopack_to_spaa-linux-x64-musl
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: turbopack_to_spaa
+            asset_name: turbopack_to_spaa-macos-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: turbopack_to_spaa
+            asset_name: turbopack_to_spaa-macos-arm64
 
     steps:
       - uses: actions/checkout@v4
